@@ -74,8 +74,9 @@ let db = null;
 const state = {
   session: null, me: null, annuaire: [], requests: [], current: null,
   view: { name: "home" }, filter: "tous", flash: "", flashErr: false, loading: false, busy: false,
-  login: { step: "email", email: "", error: "", info: "" },
-  formFiles: [], formPieces: [], formRemoved: []
+  login: { step: "password", email: "", error: "", info: "" },
+  formFiles: [], formPieces: [], formRemoved: [],
+  mustChange: false, authFlow: false, comptes: [], comptesRes: null
 };
 function me() { return state.me; }
 
@@ -203,11 +204,26 @@ function checklistDir(r) {
 /* ---------- Accès aux données ---------- */
 function errText(e) {
   const m = String((e && (e.message || e.error_description || e.msg)) || e || "");
-  if (/rate limit|security purposes|after \d+ seconds/i.test(m)) return "Trop de demandes de code en peu de temps : patientez une minute avant de réessayer.";
+  if (/rate limit|security purposes|after \d+ seconds/i.test(m)) return "Trop de demandes en peu de temps : patientez une minute avant de réessayer.";
+  if (/invalid login credentials/i.test(m)) return "Adresse ou mot de passe incorrect.";
+  if (/banned/i.test(m)) return "Ce compte est désactivé. Adressez-vous à l’administrateur de l’outil.";
   if (/Failed to fetch|NetworkError|network/i.test(m)) return "Connexion au serveur impossible. Vérifiez votre accès à internet et réessayez.";
   if (/JWT|expired|invalid claim|session/i.test(m)) return "Votre session a expiré : reconnectez-vous.";
   if (/row-level security/i.test(m)) return "Action non autorisée pour votre profil.";
   return m || "Une erreur inattendue est survenue.";
+}
+function pwdErr(e) {
+  const m = String((e && e.message) || "");
+  if (/different from the old/i.test(m)) return "Choisissez un mot de passe différent de l’actuel (ou du mot de passe provisoire).";
+  if (/at least|characters|weak|should contain|pwned|leaked/i.test(m)) return "Ce mot de passe est trop faible : 8 caractères au moins, avec des lettres et des chiffres.";
+  if (/reauthenticat|recent/i.test(m)) return "Par sécurité, déconnectez-vous puis reconnectez-vous avant de changer de mot de passe.";
+  return errText(e);
+}
+function pwdProbleme(p1, p2) {
+  if (p1.length < 8) return "Le mot de passe doit compter au moins 8 caractères.";
+  if (!/[A-Za-zÀ-ÿ]/.test(p1) || !/\d/.test(p1)) return "Le mot de passe doit contenir des lettres et des chiffres.";
+  if (p1 !== p2) return "Les deux mots de passe ne sont pas identiques.";
+  return "";
 }
 async function loadAnnuaire() {
   const { data, error } = await db.from("personnes").select("*").eq("actif", true);
@@ -267,7 +283,8 @@ async function go(name, id, opts) {
   state.loading = true; render();
   try {
     if (name === "detail" || name === "edit") await loadDetail(id);
-    else if (name !== "new" && name !== "outils") await loadList();
+    else if (name === "comptes") await loadComptes();
+    else if (!["new", "outils", "mdp"].includes(name)) await loadList();
     if (name === "new" || name === "edit") { state.formFiles = []; state.formRemoved = []; }
   } catch (e) { state.flash = errText(e); state.flashErr = true; }
   state.loading = false;
@@ -277,48 +294,123 @@ async function go(name, id, opts) {
 }
 
 /* ---------- Connexion ---------- */
-async function onSession(session) {
+async function onSession(session, opts) {
+  opts = opts || {};
   const email = String((session && session.user && session.user.email) || "").toLowerCase();
   if (!email.endsWith("@" + DOMAIN)) {
     await db.auth.signOut();
     state.session = null; state.me = null;
-    state.login = { step: "email", email: "", error: "Seules les adresses de l’établissement (prenom.nom@" + DOMAIN + ") donnent accès à l’outil.", info: "" };
+    state.login = { step: "password", email: "", error: "Seules les adresses de l’établissement (prenom.nom@" + DOMAIN + ") donnent accès à l’outil.", info: "" };
     render(); return;
   }
   state.session = session;
   try { await loadAnnuaire(); } catch (e) { state.annuaire = []; state.flash = errText(e); state.flashErr = true; }
   const p = state.annuaire.find(x => x.email === email);
-  state.me = p ? { email, name: p.nom, title: p.titre, role: p.role, unites: p.unites || [], service: p.service || null }
-               : { email, name: nameFromEmail(email), title: "Personnel de l’établissement", role: "prof", unites: [], service: null };
+  state.me = p ? { email, name: p.nom, title: p.titre, role: p.role, unites: p.unites || [], service: p.service || null, admin: !!p.admin }
+               : { email, name: nameFromEmail(email), title: "Personnel de l’établissement", role: "prof", unites: [], service: null, admin: false };
+  const meta = (session.user && session.user.user_metadata) || {};
+  state.mustChange = !!opts.forcer || !!meta.doit_changer_mdp;
+  if (opts.erreur) { state.flash = opts.erreur; state.flashErr = true; }
+  if (state.mustChange) { state.view = { name: "mdp" }; render(); window.scrollTo(0, 0); return; }
   let cible = null;
   try { cible = localStorage.getItem("sv-cible"); localStorage.removeItem("sv-cible"); } catch (_) { }
   const m = /^#demande-(\d+)$/.exec(location.hash);
   if (m) cible = m[1];
   if (cible) go("detail", Number(cible), { keepFlash: true }); else go(homeOf(state.me.role), null, { keepFlash: true });
 }
-async function sendCode(email) {
-  state.busy = true; render();
-  const { error } = await db.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: location.origin + location.pathname } });
+async function signIn(email, password) {
+  state.busy = true; state.authFlow = true; render();
+  const { data, error } = await db.auth.signInWithPassword({ email, password });
   state.busy = false;
-  if (error) { state.login = { step: "email", email, error: errText(error), info: "" }; render(); return; }
-  state.login = { step: "code", email, error: "", info: "Un code vient d’être envoyé à " + email + "." };
-  render();
-  const c = $("#login-code"); if (c) c.focus();
-}
-async function verifyCode(token) {
-  const email = state.login.email;
-  state.busy = true; render();
-  let res = await db.auth.verifyOtp({ email, token, type: "email" });
-  if (res.error && !/rate limit|security purposes/i.test(res.error.message || "")) {
-    const alt = await db.auth.verifyOtp({ email, token, type: "signup" });
-    if (!alt.error) res = alt;
+  if (error || !data || !data.session) {
+    state.authFlow = false;
+    state.login = { step: "password", email, error: errText(error || { message: "Invalid login credentials" }), info: "" };
+    render(); const f = $("#login-password"); if (f) f.focus(); return;
   }
+  await onSession(data.session);
+  state.authFlow = false;
+}
+async function sendResetCode(email) {
+  state.busy = true; render();
+  const { error } = await db.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
   state.busy = false;
-  if (res.error || !res.data || !res.data.session) {
-    state.login = Object.assign({}, state.login, { error: /rate limit|security purposes/i.test((res.error && res.error.message) || "") ? errText(res.error) : "Code incorrect ou expiré. Vérifiez-le, ou demandez un nouveau code.", info: "" });
+  if (error) { state.login = { step: "reset", email, error: errText(error), info: "" }; render(); return; }
+  state.login = { step: "reset-code", email, error: "", info: "Si un compte existe pour " + email + ", un code vient de lui être envoyé." };
+  render();
+  const c = $("#reset-code"); if (c) c.focus();
+}
+async function resetWithCode(token, pwd) {
+  const email = state.login.email;
+  state.busy = true; state.authFlow = true; render();
+  const v = await db.auth.verifyOtp({ email, token, type: "recovery" });
+  if (v.error || !v.data || !v.data.session) {
+    state.busy = false; state.authFlow = false;
+    state.login = Object.assign({}, state.login, { error: /rate limit|security purposes/i.test((v.error && v.error.message) || "") ? errText(v.error) : "Code incorrect ou expiré. Demandez un nouveau code.", info: "" });
     render(); return;
   }
-  await onSession(res.data.session);
+  const u = await db.auth.updateUser({ password: pwd, data: { doit_changer_mdp: false } });
+  state.busy = false;
+  const s2 = (await db.auth.getSession()).data.session || v.data.session;
+  if (u.error) await onSession(s2, { forcer: true, erreur: pwdErr(u.error) });
+  else { state.flash = "Votre nouveau mot de passe est enregistré."; state.flashErr = false; await onSession(s2); }
+  state.authFlow = false;
+}
+async function changePassword(p1, p2) {
+  const err = $("#mdp-err"), pb = pwdProbleme(p1, p2);
+  if (pb) { err.textContent = pb; return; }
+  const btn = $("#mdp-form button[type=submit]"); if (btn) { btn.disabled = true; btn.textContent = "Enregistrement…"; }
+  const { error } = await db.auth.updateUser({ password: p1, data: { doit_changer_mdp: false } });
+  if (error) { err.textContent = pwdErr(error); if (btn) { btn.disabled = false; btn.textContent = "Enregistrer mon mot de passe"; } return; }
+  const premiere = state.mustChange;
+  state.mustChange = false; state.flashErr = false;
+  state.flash = premiere ? "Votre mot de passe est enregistré. Bienvenue dans l’outil Sorties et voyages." : "Votre mot de passe a été modifié.";
+  go(homeOf(me().role), null, { keepFlash: true });
+}
+
+/* ---------- Comptes du personnel (administrateur) ---------- */
+async function loadComptes() {
+  const res = await callWorkflow({ action: "lister_comptes" });
+  state.comptes = res.comptes || [];
+}
+const STATUT_COMPTE = { cree: ["Compte créé", "ok-c"], existe: ["Déjà existant", "draft-c"], refusee: ["Adresse refusée", "bad-c"], erreur: ["Erreur", "bad-c"], reinitialise: ["Nouveau mot de passe provisoire", "ok-c"], desactive: ["Désactivé", "bad-c"], reactive: ["Réactivé", "ok-c"] };
+function renderComptes() {
+  const list = state.comptes;
+  const nbProv = list.filter(c => c.provisoire && !c.desactive).length, nbAct = list.filter(c => !c.provisoire && !c.desactive).length, nbDes = list.filter(c => c.desactive).length;
+  const dis = state.busy ? " disabled" : "";
+  let h = '<div class="page-head"><div><h1>Comptes du personnel</h1><p>Chaque personne se connecte avec son adresse @' + esc(DOMAIN) + '. Elle reçoit par courriel un mot de passe provisoire, personnel, qu’elle remplace à sa première connexion.</p></div></div>';
+  h += '<div class="tiles">' + tile(nbAct, "comptes actifs", "ok") + tile(nbProv, "en attente de première connexion", "warn") + tile(nbDes, "désactivés", "bad") + "</div>";
+  h += '<section class="card stack"><div><h2>Créer des comptes</h2><p class="hint">Collez les adresses du personnel, une par ligne ou séparées par des virgules. Les comptes existants sont ignorés. Brevo envoie au plus 300 courriels par jour : au-delà de 250 adresses, faites plusieurs envois.</p></div>' +
+    '<div class="field"><label for="comptes-emails">Adresses</label><textarea id="comptes-emails" rows="6" placeholder="prenom.nom@' + esc(DOMAIN) + '"></textarea><span class="err" id="comptes-err"></span></div>' +
+    '<div class="actions"><button class="btn primary" data-action="creer-comptes"' + dis + ">" + (state.busy ? "Création en cours…" : "Créer les comptes et envoyer les mots de passe") + "</button></div></section>";
+  if (state.comptesRes && state.comptesRes.length) {
+    h += '<section class="card"><h2>Résultat</h2><div class="tbl-wrap"><table class="t"><thead><tr><th>Adresse</th><th>Résultat</th><th>Détail</th></tr></thead><tbody>' +
+      state.comptesRes.map(r => { const st = STATUT_COMPTE[r.statut] || [r.statut, "draft-c"]; return "<tr><td>" + esc(r.email) + '</td><td><span class="pill ' + st[1] + '">' + esc(st[0]) + "</span></td><td>" + esc(r.detail || "") + (r.mdp ? ' : <code class="num">' + esc(r.mdp) + "</code>" : "") + "</td></tr>"; }).join("") +
+      "</tbody></table></div></section>";
+  }
+  h += '<section class="card stack"><div class="row between"><h2>Comptes existants (' + list.length + ')</h2><input id="comptes-filtre" type="text" placeholder="Rechercher une adresse" aria-label="Rechercher une adresse" style="max-width:280px"></div>' +
+    (list.length ? '<div class="tbl-wrap"><table class="t"><thead><tr><th>Adresse</th><th>État</th><th>Dernière connexion</th><th class="r">Actions</th></tr></thead><tbody>' +
+      list.map(c => {
+        const etat = c.desactive ? ["Désactivé", "bad-c"] : c.provisoire ? ["Mot de passe provisoire", "warn-c"] : ["Actif", "ok-c"];
+        const soi = c.email === me().email;
+        return '<tr data-email="' + esc(c.email) + '"><td>' + esc(c.email) + '</td><td><span class="pill ' + etat[1] + '">' + etat[0] + "</span></td><td>" + (c.derniere_connexion ? esc(stamp(c.derniere_connexion)) : '<span class="hint">jamais</span>') + '</td><td class="r"><div class="row" style="justify-content:flex-end;gap:6px">' +
+          (c.desactive ? "" : '<button class="btn small" data-action="compte-reinit" data-email="' + esc(c.email) + '"' + dis + ">Nouveau mot de passe</button>") +
+          (soi ? "" : c.desactive ? '<button class="btn small" data-action="compte-reactiver" data-email="' + esc(c.email) + '"' + dis + ">Réactiver</button>" : '<button class="btn small danger" data-action="compte-desactiver" data-email="' + esc(c.email) + '"' + dis + ">Désactiver</button>") +
+          "</div></td></tr>";
+      }).join("") + "</tbody></table></div>" : '<p class="hint">Aucun compte pour le moment.</p>') +
+    '<p class="hint">« Désactiver » bloque l’accès d’une personne qui quitte l’établissement, sans effacer ses demandes.</p></section>';
+  return h;
+}
+async function actionComptes(body, okMsg) {
+  if (state.busy) return;
+  state.busy = true; $$("#app .btn").forEach(b => { b.disabled = true; });
+  try {
+    const res = await callWorkflow(body);
+    state.comptesRes = res.resultats || [];
+    state.busy = false; state.flashErr = false; state.flash = okMsg(res);
+    await go("comptes", null, { keepFlash: true, keepScroll: true });
+  } catch (e) {
+    state.busy = false; state.flash = errText(e); state.flashErr = true; render();
+  }
 }
 
 /* ---------- Rendu ---------- */
@@ -330,6 +422,10 @@ function render() {
   const app = $("#app");
   if (!db) return;
   if (!me()) { app.innerHTML = renderLogin() + footer(); return; }
+  if (state.mustChange) {
+    app.innerHTML = (state.flash ? '<div class="flash' + (state.flashErr ? " err-flash" : "") + '" role="status">' + esc(state.flash) + "</div>" : "") + renderMdp() + footer();
+    return;
+  }
   const v = state.view;
   let html = renderTabs();
   if (state.flash) html += '<div class="flash' + (state.flashErr ? " err-flash" : "") + '" role="status">' + esc(state.flash) + "</div>";
@@ -343,6 +439,8 @@ function render() {
   else if (v.name === "svc") html += renderSvc();
   else if (v.name === "cal") html += renderCal();
   else if (v.name === "outils") html += renderOutils();
+  else if (v.name === "mdp") html += renderMdp();
+  else if (v.name === "comptes" && me().admin) html += renderComptes();
   else { go(homeOf(me().role)); return; }
   app.innerHTML = html + footer();
   if (v.name === "new" || v.name === "edit") syncForm();
@@ -353,23 +451,41 @@ function renderTop() {
   if (!m) { el.innerHTML = ""; return; }
   el.innerHTML = '<details class="menu" id="menu"><summary aria-label="Profil et déconnexion"><span class="avatar" aria-hidden="true">' + esc(initials(m.name)) + '</span><span class="who-name"><strong>' + esc(m.name) + "</strong><span>" + esc(m.title) + '</span></span><span class="caret" aria-hidden="true"></span></summary>' +
     '<div class="menu-panel"><div><strong>' + esc(m.name) + '</strong><div class="hint">' + esc(m.title) + '</div><div class="hint">' + esc(m.email) + "</div></div>" +
+    '<button class="btn" data-action="tab" data-view="mdp">Changer mon mot de passe</button>' +
     '<button class="btn" data-action="logout">Se déconnecter</button></div></details>';
 }
 function renderLogin() {
   const L = state.login, dis = state.busy ? " disabled" : "";
   const err = '<span class="err" id="login-err">' + esc(L.error) + "</span>";
-  const step1 = '<form id="login-form" class="stack" novalidate>' +
-    '<div class="field"><label for="login-email">Votre adresse de l’établissement</label>' +
-    '<input id="login-email" type="email" inputmode="email" autocomplete="email" autocapitalize="off" placeholder="prenom.nom@' + DOMAIN + '" value="' + esc(L.email) + '"' + (L.error ? ' class="invalid" aria-describedby="login-err"' : "") + ">" + err +
-    '<span class="hint">Pas de mot de passe : vous recevez un code de connexion par courriel.</span></div>' +
-    '<button class="btn primary" type="submit"' + dis + ">" + (state.busy ? "Envoi en cours…" : "Recevoir mon code") + "</button></form>";
-  const step2 = '<form id="code-form" class="stack" novalidate>' + (L.info ? '<div class="callout">' + esc(L.info) + " Il peut mettre une minute à arriver ; pensez à regarder dans les courriels indésirables.</div>" : "") +
-    '<div class="field"><label for="login-code">Code reçu par courriel</label><input id="login-code" class="code-input' + (L.error ? " invalid" : "") + '" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="••••••">' + err + "</div>" +
-    '<button class="btn primary" type="submit"' + dis + ">" + (state.busy ? "Vérification…" : "Me connecter") + "</button>" +
-    '<div class="row"><button class="link" type="button" data-action="resend">Recevoir un nouveau code</button><button class="link" type="button" data-action="login-back">Changer d’adresse</button></div></form>';
-  return '<div class="login"><div class="card login-card"><div class="login-logo"><img src="img/logo.png" alt="Protectorat Saint-Joseph"></div><h1>Sorties et voyages scolaires</h1><p>Préparez, déposez et suivez vos demandes de sorties et de voyages, sans identifiant ni mot de passe.</p>' + (L.step === "code" ? step2 : step1) + "</div>" +
-    '<div class="card"><h2>Comment ça marche</h2><ol class="ref-list"><li>Saisissez votre adresse de l’établissement, sous la forme prenom.nom@' + esc(DOMAIN) + ".</li><li>Vous recevez un code par courriel.</li><li>Saisissez ce code : vous êtes connecté sur cet appareil.</li></ol>" +
-    '<p class="hint" style="margin-top:12px">Le directeur de l’unité décide de chaque demande ; le chef d’établissement en est informé et peut arbitrer. Une fois la sortie validée, la comptabilité, la vie scolaire, le secrétariat et le chef de cuisine sont prévenus automatiquement.</p></div></div>';
+  const emailField = (id, ac) => '<div class="field"><label for="' + id + '">Identifiant : votre adresse de l’établissement</label><input id="' + id + '" type="email" inputmode="email" autocomplete="' + ac + '" autocapitalize="off" placeholder="prenom.nom@' + DOMAIN + '" value="' + esc(L.email) + '"></div>';
+  let form;
+  if (L.step === "reset") {
+    form = '<form id="reset-form" class="stack" novalidate><p>Indiquez votre adresse : vous recevrez un code pour choisir un nouveau mot de passe.</p>' + emailField("reset-email", "email") + err +
+      '<button class="btn primary" type="submit"' + dis + ">" + (state.busy ? "Envoi en cours…" : "Recevoir un code") + '</button><button class="link" type="button" data-action="login-back">Retour à la connexion</button></form>';
+  } else if (L.step === "reset-code") {
+    form = '<form id="reset-code-form" class="stack" novalidate>' + (L.info ? '<div class="callout">' + esc(L.info) + " Il peut mettre une minute à arriver ; pensez à regarder dans les courriels indésirables.</div>" : "") +
+      '<div class="field"><label for="reset-code">Code reçu par courriel</label><input id="reset-code" class="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="••••••"></div>' +
+      '<div class="field"><label for="reset-mdp1">Nouveau mot de passe</label><input id="reset-mdp1" type="password" autocomplete="new-password"><span class="hint">8 caractères au moins, avec des lettres et des chiffres.</span></div>' +
+      '<div class="field"><label for="reset-mdp2">Confirmez le mot de passe</label><input id="reset-mdp2" type="password" autocomplete="new-password"></div>' + err +
+      '<button class="btn primary" type="submit"' + dis + ">" + (state.busy ? "Enregistrement…" : "Enregistrer et me connecter") + "</button>" +
+      '<div class="row"><button class="link" type="button" data-action="resend">Recevoir un nouveau code</button><button class="link" type="button" data-action="login-back">Retour à la connexion</button></div></form>';
+  } else {
+    form = '<form id="login-form" class="stack" novalidate>' + emailField("login-email", "username") +
+      '<div class="field"><label for="login-password">Mot de passe</label><input id="login-password" type="password" autocomplete="current-password"' + (L.error ? ' class="invalid" aria-describedby="login-err"' : "") + ">" + err + "</div>" +
+      '<button class="btn primary" type="submit"' + dis + ">" + (state.busy ? "Connexion…" : "Se connecter") + '</button><button class="link" type="button" data-action="forgot">Mot de passe oublié ?</button></form>';
+  }
+  return '<div class="login"><div class="card login-card"><div class="login-logo"><img src="img/logo.png" alt="Protectorat Saint-Joseph"></div><h1>Sorties et voyages scolaires</h1><p>Préparez, déposez et suivez vos demandes de sorties et de voyages.</p>' + form + "</div>" +
+    '<div class="card"><h2>Comment se connecter</h2><ol class="ref-list"><li>Votre identifiant est votre adresse de l’établissement, sous la forme prenom.nom@' + esc(DOMAIN) + ".</li><li>La première fois, utilisez le mot de passe provisoire reçu par courriel : l’outil vous demande ensuite de choisir le vôtre.</li><li>Vous restez connecté sur cet appareil tant que vous ne vous déconnectez pas.</li><li>Mot de passe oublié : un code vous est envoyé par courriel pour en choisir un nouveau.</li></ol>" +
+    '<p class="hint" style="margin-top:12px">Pas encore de compte ? Adressez-vous à l’administrateur de l’outil, M. Sivasuthasarma.</p></div></div>';
+}
+function renderMdp() {
+  const forced = state.mustChange;
+  return '<div class="page-head"><div><h1>' + (forced ? "Choisissez votre mot de passe" : "Changer mon mot de passe") + "</h1><p>" +
+    (forced ? "Vous vous êtes connecté avec un mot de passe provisoire. Choisissez le vôtre pour continuer : il remplacera celui reçu par courriel." : "Le nouveau mot de passe remplacera l’actuel sur tous vos appareils.") + "</p></div></div>" +
+    '<form id="mdp-form" class="card stack" novalidate style="max-width:520px">' +
+    '<div class="field"><label for="mdp-1">Nouveau mot de passe</label><input id="mdp-1" type="password" autocomplete="new-password"><span class="hint">8 caractères au moins, avec des lettres et des chiffres.</span></div>' +
+    '<div class="field"><label for="mdp-2">Confirmez le mot de passe</label><input id="mdp-2" type="password" autocomplete="new-password"><span class="err" id="mdp-err"></span></div>' +
+    '<button class="btn primary" type="submit">Enregistrer mon mot de passe</button>' + (forced ? '<button class="link" type="button" data-action="logout">Se déconnecter</button>' : "") + "</form>";
 }
 function renderTabs() {
   const m = me(), list = state.requests;
@@ -382,6 +498,7 @@ function renderTabs() {
     chef: [["all", "Toutes les demandes"], ["cal", "Calendrier"], ["mine", "Mes demandes", mineComp], ["outils", "Boîte à outils"]],
     service: [["svc", "À traiter", svcTodo], ["cal", "Calendrier"]]
   }[m.role] || [["mine", "Mes demandes"]];
+  if (m.admin) tabs.push(["comptes", "Comptes"]);
   const cur = state.view.name;
   return '<nav class="tabs" aria-label="Sections">' + tabs.map(([k, l, c]) => '<button class="tab" data-action="tab" data-view="' + k + '"' + (cur === k ? ' aria-current="page"' : "") + ">" + esc(l) + (c ? '<span class="count">' + c + "</span>" : "") + "</button>").join("") + "</nav>";
 }
@@ -881,9 +998,23 @@ document.addEventListener("click", e => {
   const act2 = a.dataset.action, id = a.dataset.id ? Number(a.dataset.id) : null;
   if (a.tagName === "BUTTON") e.preventDefault();
   switch (act2) {
-    case "logout": db.auth.signOut().finally(() => { state.session = null; state.me = null; state.requests = []; state.current = null; state.login = { step: "email", email: "", error: "", info: "" }; setHash({ name: "home" }); render(); window.scrollTo(0, 0); }); break;
-    case "login-back": state.login = { step: "email", email: state.login.email, error: "", info: "" }; render(); break;
-    case "resend": sendCode(state.login.email); break;
+    case "logout": db.auth.signOut().finally(() => { state.session = null; state.me = null; state.mustChange = false; state.requests = []; state.current = null; state.comptes = []; state.comptesRes = null; state.flash = ""; state.login = { step: "password", email: "", error: "", info: "" }; setHash({ name: "home" }); render(); window.scrollTo(0, 0); }); break;
+    case "forgot": { const f = $("#login-email"); state.login = { step: "reset", email: f ? f.value.trim().toLowerCase() : state.login.email, error: "", info: "" }; render(); const r = $("#reset-email"); if (r) r.focus(); break; }
+    case "login-back": state.login = { step: "password", email: state.login.email, error: "", info: "" }; render(); break;
+    case "resend": sendResetCode(state.login.email); break;
+    case "creer-comptes": {
+      const t = $("#comptes-emails").value.trim();
+      if (!t) { $("#comptes-err").textContent = "Collez au moins une adresse."; break; }
+      actionComptes({ action: "creer_comptes", emails: t }, res => { const n = (res.resultats || []).filter(r => r.statut === "cree").length; return n ? plural(n, "compte créé", "comptes créés") + "." : "Aucun nouveau compte créé."; });
+      break;
+    }
+    case "compte-reinit": actionComptes({ action: "reinitialiser_compte", email: a.dataset.email }, () => "Nouveau mot de passe provisoire créé pour " + a.dataset.email + "."); break;
+    case "compte-reactiver": actionComptes({ action: "reactiver_compte", email: a.dataset.email }, () => "Compte réactivé : " + a.dataset.email + "."); break;
+    case "compte-desactiver": {
+      if (a.dataset.armed !== "1") { a.dataset.armed = "1"; a.textContent = "Confirmer"; setTimeout(() => { if (a.isConnected) { a.dataset.armed = ""; a.textContent = "Désactiver"; } }, 5000); break; }
+      actionComptes({ action: "desactiver_compte", email: a.dataset.email }, () => "Compte désactivé : " + a.dataset.email + ".");
+      break;
+    }
     case "tab": if (a.dataset.view === "all") state.filter = "tous"; state.formReady = null; go(a.dataset.view); break;
     case "filter": state.filter = a.dataset.f; render(); break;
     case "open": go("detail", id); break;
@@ -928,22 +1059,37 @@ document.addEventListener("input", e => {
     syncForm();
   }
   if (t.dataset && t.dataset.fin) updateFinSum();
+  if (t.id === "comptes-filtre") { const q = t.value.trim().toLowerCase(); $$("tr[data-email]").forEach(tr => tr.classList.toggle("hidden", !!q && !tr.dataset.email.includes(q))); }
+  if (t.id === "comptes-emails") { const er = $("#comptes-err"); if (er) er.textContent = ""; }
   if (["dec-comment", "arb-comment", "avis-comment"].includes(t.id)) { t.classList.remove("invalid"); const er = $("#" + t.id.split("-")[0] + "-err"); if (er) er.textContent = ""; }
 });
 document.addEventListener("submit", e => {
   e.preventDefault();
   if (state.busy) return;
-  if (e.target.id === "login-form") {
-    const email = $("#login-email").value.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { state.login = { step: "email", email, error: "Saisissez votre adresse complète, sous la forme prenom.nom@" + DOMAIN + ".", info: "" }; render(); $("#login-email").focus(); return; }
-    if (!email.endsWith("@" + DOMAIN)) { state.login = { step: "email", email, error: "Seules les adresses de l’établissement (prenom.nom@" + DOMAIN + ") donnent accès à l’outil.", info: "" }; render(); $("#login-email").focus(); return; }
-    sendCode(email);
+  const id = e.target.id;
+  const domaineOk = email => {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "Saisissez votre adresse complète, sous la forme prenom.nom@" + DOMAIN + ".";
+    if (!email.endsWith("@" + DOMAIN)) return "Seules les adresses de l’établissement (prenom.nom@" + DOMAIN + ") donnent accès à l’outil.";
+    return "";
+  };
+  if (id === "login-form") {
+    const email = $("#login-email").value.trim().toLowerCase(), pwd = $("#login-password").value;
+    const pb = domaineOk(email) || (pwd ? "" : "Saisissez votre mot de passe.");
+    if (pb) { state.login = { step: "password", email, error: pb, info: "" }; render(); return; }
+    signIn(email, pwd);
   }
-  if (e.target.id === "code-form") {
-    const token = $("#login-code").value.replace(/\D/g, "");
-    if (token.length < 6) { state.login = Object.assign({}, state.login, { error: "Saisissez le code reçu par courriel.", info: "" }); render(); $("#login-code").focus(); return; }
-    verifyCode(token);
+  if (id === "reset-form") {
+    const email = $("#reset-email").value.trim().toLowerCase(), pb = domaineOk(email);
+    if (pb) { state.login = { step: "reset", email, error: pb, info: "" }; render(); return; }
+    sendResetCode(email);
   }
+  if (id === "reset-code-form") {
+    const token = $("#reset-code").value.replace(/\D/g, ""), p1 = $("#reset-mdp1").value, p2 = $("#reset-mdp2").value;
+    const pb = token.length < 6 ? "Saisissez le code reçu par courriel." : pwdProbleme(p1, p2);
+    if (pb) { $("#login-err").textContent = pb; return; }
+    resetWithCode(token, p1);
+  }
+  if (id === "mdp-form") changePassword($("#mdp-1").value, $("#mdp-2").value);
 });
 window.addEventListener("hashchange", () => {
   const m = /^#demande-(\d+)$/.exec(location.hash);
@@ -964,7 +1110,7 @@ async function start() {
   if (m) { try { localStorage.setItem("sv-cible", m[1]); } catch (_) { } }
   db.auth.onAuthStateChange((event, session) => {
     if (event === "SIGNED_OUT") { state.session = null; state.me = null; render(); }
-    else if (event === "SIGNED_IN" && session && !state.session) setTimeout(() => { if (!state.session) onSession(session); }, 0);
+    else if (event === "SIGNED_IN" && session && !state.session && !state.authFlow) setTimeout(() => { if (!state.session && !state.authFlow) onSession(session); }, 0);
   });
   const { data } = await db.auth.getSession();
   if (data && data.session) await onSession(data.session); else render();
