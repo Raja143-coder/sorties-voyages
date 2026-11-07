@@ -87,7 +87,7 @@ function fromDb(x) {
     status: x.statut, unite: x.unite || "", type: x.type, destination: x.destination, pays: x.pays || "",
     titre: x.titre || "", lieu: x.lieu || "", objectifs: x.objectifs || "", disciplines: x.disciplines || "",
     dateDebut: x.date_debut || "", dateFin: x.date_fin || "", heureDepart: x.heure_depart || "", heureRetour: x.heure_retour || "", rdv: x.rdv || "",
-    classes: x.classes || "", nbEleves: num(x.nb_eleves), nbDP: num(x.nb_dp), besoins: !!x.besoins,
+    classes: x.classes || "", nbEleves: num(x.nb_eleves), nbDP: num(x.nb_dp), sansRepas: !!x.sans_repas, besoins: !!x.besoins,
     accompagnateurs: x.accompagnateurs || [], transports: x.transports || [], hebergement: x.hebergement || "",
     depenses: x.depenses || {}, coutAccomp: num(x.cout_accomp), participation: num(x.participation),
     pieces: x.pieces || [], financement: x.financement || null, taches: x.taches || null,
@@ -100,7 +100,7 @@ function toDb(x) {
     unite: x.unite || null, type: x.type, destination: x.destination, pays: x.pays,
     titre: x.titre, lieu: x.lieu, objectifs: x.objectifs, disciplines: x.disciplines,
     date_debut: x.dateDebut || null, date_fin: x.dateFin || null, heure_depart: x.heureDepart, heure_retour: x.heureRetour, rdv: x.rdv,
-    classes: x.classes, nb_eleves: Math.max(0, Math.round(num(x.nbEleves))), nb_dp: Math.max(0, Math.round(num(x.nbDP))), besoins: x.besoins,
+    classes: x.classes, nb_eleves: Math.max(0, Math.round(num(x.nbEleves))), nb_dp: x.sansRepas ? 0 : Math.max(0, Math.round(num(x.nbDP))), sans_repas: !!x.sansRepas, besoins: x.besoins,
     accompagnateurs: x.accompagnateurs, transports: x.transports, hebergement: x.hebergement,
     depenses: x.depenses, cout_accomp: num(x.coutAccomp), participation: num(x.participation)
   };
@@ -109,7 +109,7 @@ function mk(o) {
   return Object.assign({
     id: null, author: null, status: "brouillon", unite: "", type: "sortie", destination: "france", pays: "",
     titre: "", lieu: "", objectifs: "", disciplines: "", dateDebut: "", dateFin: "", heureDepart: "", heureRetour: "", rdv: "",
-    classes: "", nbEleves: 0, nbDP: 0, besoins: false, accompagnateurs: [], transports: [], hebergement: "", depenses: {}, coutAccomp: 0, participation: 0,
+    classes: "", nbEleves: 0, nbDP: 0, sansRepas: false, besoins: false, accompagnateurs: [], transports: [], hebergement: "", depenses: {}, coutAccomp: 0, participation: 0,
     pieces: [], financement: null, taches: null, checklist: {}, checkDir: {}, historique: [], liens: {}
   }, o);
 }
@@ -128,13 +128,14 @@ function totals(r) {
   const n = num(r.nbEleves);
   return { eleves, accomp, total, parEleve: n > 0 ? total / n : 0, n };
 }
+function repasAPrevoir(r) { return !r.sansRepas && num(r.nbDP) > 0; }
 function staffAcc(r) { return (r.accompagnateurs || []).filter(a => ["enseignant", "personnel", "aesh"].includes(a.qualite)); }
 function vigilance(r) {
   const out = [];
   const t = totals(r), part = num(r.participation), acc = r.accompagnateurs || [];
   if (part > 0 && t.n > 0 && part > t.parEleve + 0.005) out.push(["bad", "Bloquant", "La participation demandée aux familles (" + eur(part) + ") dépasse le coût par élève (" + eur(t.parEleve) + ")."]);
   if (t.total > 0 && !(r.pieces || []).length && !(r === state.formDraft && state.formFiles.length)) out.push(["warn", "À vérifier", "La sortie a un coût mais aucun devis n’est joint."]);
-  if (r.status !== "validee" && num(r.nbDP) > 0 && daysUntil(r.dateDebut) < 21 && daysUntil(r.dateDebut) >= 0) out.push(["warn", "Délai", "Départ dans moins de trois semaines : le chef de cuisine doit être prévenu sans attendre pour les " + num(r.nbDP) + " paniers repas."]);
+  if (r.status !== "validee" && repasAPrevoir(r) && daysUntil(r.dateDebut) < 21 && daysUntil(r.dateDebut) >= 0) out.push(["warn", "Délai", "Départ dans moins de trois semaines : le chef de cuisine doit être prévenu sans attendre pour les " + num(r.nbDP) + " paniers repas."]);
   if (acc.some(a => a.qualite === "parent" || a.qualite === "autre")) out.push(["note", "Encadrement", "Les accompagnateurs extérieurs à l’établissement doivent être autorisés par écrit par le chef d’établissement." + (r.type === "voyage" ? " Pour un voyage, leur identité complète (nom de naissance, prénom, date et lieu de naissance) est demandée pour le contrôle d’honorabilité." : "")]);
   if ((r.transports || []).includes("Car")) out.push(["note", "Transport", "Car : entreprise inscrite au registre des transporteurs et conducteur professionnel ; ceinture obligatoire pour tous ; le conducteur ne compte pas dans l’encadrement."]);
   if (r.destination === "etranger") out.push(["note", "Étranger", "Autorisation de sortie de territoire pour chaque mineur, avec la copie de la pièce d’identité du signataire ; carte européenne d’assurance maladie recommandée en Europe ; déclaration Ariane par la direction."]);
@@ -149,7 +150,7 @@ function renderVig(list) {
 
 /* ---------- Checklists ---------- */
 function checklistFor(r) {
-  const V = r.type === "voyage", E = r.destination === "etranger", DP = num(r.nbDP) > 0;
+  const V = r.type === "voyage", E = r.destination === "etranger", DP = repasAPrevoir(r);
   const P = [];
   P.push(["Réservations et budget", [
     ["transport", "Réserver le transport"], ["activites", "Réserver les activités et les visites"],
@@ -552,7 +553,7 @@ function svcDetails(r, svc) {
   }
   if (svc === "viesco") return kv([["Date(s)", dateRange(r) + horaires(r)], ["Classes", r.classes], ["Adultes absents", staff.map(a => a.nom).join(", ") || "aucun"], ["Rendez-vous", r.rdv || "non précisé"]].concat(r.type === "voyage" ? [["Voyage", "responsable santé à désigner"]] : []));
   if (svc === "secretariat") return kv([["Date(s)", dateRange(r) + horaires(r)], ["Ordres de mission", staff.map(a => a.nom + " (" + QUALITES[a.qualite].toLowerCase() + ")").join(", ") || "aucun"], ["Destination", r.lieu + (r.pays ? " (" + r.pays + ")" : "")]]);
-  if (svc === "cuisine") return kv([["Date", dLong(r.dateDebut)], ["Paniers repas", plural(num(r.nbDP), "panier")], ["Classes", r.classes], ["Retrait", "à la cantine entre 7 h 30 et 10 h"]]);
+  if (svc === "cuisine") return kv([["Paniers repas", plural(num(r.nbDP), "panier") + " pour le " + dLong(r.dateDebut)], ["Absents de la cantine", dateRange(r)], ["Départ", r.heureDepart || "heure non précisée"], ["Classes", r.classes], ["Retrait", "à la cantine entre 7 h 30 et 10 h, sauf autre arrangement avec l’organisateur"]]);
   return "";
 }
 function renderSvc() {
@@ -669,7 +670,7 @@ function renderDetail(r) {
   h += '<div class="card"><h2>Le projet</h2>' + kv([["Objectifs", r.objectifs], ["Disciplines", r.disciplines]]) + "</div>";
   h += '<div class="card"><h2>Organisation</h2>' + kv([["Date(s)", dateRange(r)], ["Horaires", r.heureDepart ? "départ " + r.heureDepart + (r.heureRetour ? ", retour " + r.heureRetour : "") : ""], ["Rendez-vous", r.rdv], ["Lieu", r.lieu], ["Transports", (r.transports || []).join(", ")]].concat(r.type === "voyage" ? [["Hébergement", r.hebergement]] : [])) + "</div>";
   const nAcc = (r.accompagnateurs || []).length;
-  h += '<div class="card"><h2>Élèves et encadrement</h2>' + kv([["Classes", r.classes], ["Élèves", plural(num(r.nbEleves), "élève")], ["Demi-pensionnaires", plural(num(r.nbDP), "élève")], ["Besoins particuliers", r.besoins ? "oui (PAI, PPS ou AESH)" : "non signalés"], ["Encadrement", nAcc ? encadrement(nAcc, num(r.nbEleves)) : "aucun accompagnateur"]]) +
+  h += '<div class="card"><h2>Élèves et encadrement</h2>' + kv([["Classes", r.classes], ["Élèves", plural(num(r.nbEleves), "élève")], ["Demi-pensionnaires", r.sansRepas ? "aucun repas à prévoir par la restauration" : plural(num(r.nbDP), "élève")], ["Besoins particuliers", r.besoins ? "oui (PAI, PPS ou AESH)" : "non signalés"], ["Encadrement", nAcc ? encadrement(nAcc, num(r.nbEleves)) : "aucun accompagnateur"]]) +
     (nAcc ? '<div class="tbl-wrap" style="margin-top:12px"><table class="t"><thead><tr><th>Accompagnateur</th><th>Qualité</th></tr></thead><tbody>' + r.accompagnateurs.map(a => "<tr><td>" + esc(a.nom) + "</td><td>" + esc(QUALITES[a.qualite] || a.qualite) + "</td></tr>").join("") + "</tbody></table></div>" : "") + "</div>";
   const depRows = DEPENSES.filter(([k]) => num((r.depenses || {})[k]) > 0);
   h += '<div class="card"><h2>Budget</h2><div class="tbl-wrap"><table class="t"><thead><tr><th>Dépense</th><th class="r">Montant</th></tr></thead><tbody>' +
@@ -690,7 +691,7 @@ function renderDecision(r) {
     '<p id="fin-sum" class="hint" data-cost="' + t.parEleve + '"></p>' +
     '<div class="field"><label for="dec-comment">Commentaire pour ' + esc(r.author.name) + '</label><textarea id="dec-comment" placeholder="Obligatoire pour demander des compléments ou refuser."></textarea><span class="err" id="dec-err"></span></div>' +
     '<div class="actions"><button class="btn ok" data-action="decide" data-decision="validee" data-id="' + r.id + '"' + dis + '>Valider la demande</button><button class="btn info" data-action="decide" data-decision="complements" data-id="' + r.id + '"' + dis + '>Demander des compléments</button><button class="btn danger" data-action="decide" data-decision="refusee" data-id="' + r.id + '"' + dis + ">Refuser</button></div>" +
-    '<p class="hint">Après validation, ' + esc(r.author.name) + ", la comptabilité, la vie scolaire et le secrétariat" + (num(r.nbDP) > 0 ? ", ainsi que le chef de cuisine (" + plural(num(r.nbDP), "panier") + " repas)," : "") + " reçoivent un courriel. " + esc(chefName()) + " est en copie.</p></section>";
+    '<p class="hint">Après validation, ' + esc(r.author.name) + ", la comptabilité, la vie scolaire et le secrétariat" + (repasAPrevoir(r) ? ", ainsi que le chef de cuisine (" + plural(num(r.nbDP), "panier") + " repas)," : "") + " reçoivent un courriel. " + esc(chefName()) + " est en copie.</p></section>";
 }
 function renderChefPanel(r, dir) {
   const dis = state.busy ? " disabled" : "";
@@ -761,7 +762,8 @@ function renderForm(r) {
   h += '<fieldset><legend>3. Dates et horaires</legend><div class="grid2">' + fld("dateDebut", "Date (ou date de départ)", x.dateDebut, { type: "date", req: true }) + fld("dateFin", "Date de retour", x.dateFin, { type: "date", if: "voyage", req: true }) + "</div>" +
     '<div class="grid3">' + fld("heureDepart", "Heure de départ", x.heureDepart, { type: "time" }) + fld("heureRetour", "Heure de retour", x.heureRetour, { type: "time" }) + fld("rdv", "Lieu de rendez-vous", x.rdv, { ph: "Ex. : gare RER d’Aulnay" }) + "</div></fieldset>";
   h += '<fieldset><legend>4. Élèves</legend>' + fld("classes", "Classe(s)", x.classes, { req: true, ph: "Ex. : 3e A, 3e B" }) + '<div class="grid2">' + fld("nbEleves", "Nombre d’élèves", x.nbEleves || "", { type: "number", min: 1, req: true, mode: "numeric" }) +
-    fld("nbDP", "Dont demi-pensionnaires", x.nbDP || "", { type: "number", min: 0, mode: "numeric", hint: "Le chef de cuisine sera prévenu pour les paniers repas." }) + "</div>" +
+    fld("nbDP", "Dont demi-pensionnaires", x.nbDP || "", { type: "number", min: 0, mode: "numeric", if: "repas", req: true, hint: "Le chef de cuisine sera prévenu pour les paniers repas." }) + "</div>" +
+    '<label class="inline" for="sansRepas"><input type="checkbox" id="sansRepas" name="sansRepas"' + (x.sansRepas ? " checked" : "") + "> <span>Aucun repas à prévoir par le service de restauration (pique-nique fourni par les familles, repas sur place, retour avant le déjeuner…)</span></label>" +
     '<label class="inline" for="besoins"><input type="checkbox" id="besoins" name="besoins"' + (x.besoins ? " checked" : "") + "> <span>Des élèves ont des besoins particuliers (PAI, PPS, accompagnement AESH)</span></label>" +
     '<p class="tip"><span>Aucune donnée médicale n’est saisie ici : les PAI et les fiches sanitaires restent sur papier, sous pli cacheté.</span></p></fieldset>';
   h += '<fieldset><legend>5. Accompagnateurs</legend><p class="hint">Indiquez tous les adultes, vous compris. La vie scolaire et le secrétariat s’en servent pour l’emploi du temps et les ordres de mission.</p><div class="stack" id="acc-list" style="gap:10px">' + (x.accompagnateurs.length ? x.accompagnateurs : [null]).map(accRow).join("") +
@@ -791,7 +793,7 @@ function readForm() {
   return { unite: radioVal(f, "unite"), type, destination: dest, pays: dest === "etranger" ? g("pays") : "",
     titre: g("titre"), lieu: g("lieu"), objectifs: g("objectifs"), disciplines: g("disciplines"),
     dateDebut: g("dateDebut"), dateFin: type === "voyage" ? g("dateFin") : "", heureDepart: g("heureDepart"), heureRetour: g("heureRetour"), rdv: g("rdv"),
-    classes: g("classes"), nbEleves: num(g("nbEleves")), nbDP: num(g("nbDP")), besoins: $("#besoins").checked, accompagnateurs: acc,
+    classes: g("classes"), nbEleves: num(g("nbEleves")), nbDP: $("#sansRepas").checked ? 0 : num(g("nbDP")), sansRepas: $("#sansRepas").checked, besoins: $("#besoins").checked, accompagnateurs: acc,
     transports: $$('input[name="transports"]:checked', f).map(i => i.value), hebergement: type === "voyage" ? g("hebergement") : "",
     depenses: dep, coutAccomp: num(g("coutAccomp")), participation: num(g("participation")), pieces: [...state.formPieces], status: "brouillon" };
 }
@@ -807,7 +809,8 @@ function validateForm(x) {
   if (x.destination === "etranger" && !x.pays) e.pays = "Indiquez le pays.";
   if (!x.classes) e.classes = "Indiquez la ou les classes.";
   if (!(x.nbEleves > 0)) e.nbEleves = "Indiquez le nombre d’élèves.";
-  if (x.nbDP > x.nbEleves) e.nbDP = "Le nombre de demi-pensionnaires dépasse le nombre d’élèves.";
+  if (!x.sansRepas && !(x.nbDP > 0)) e.nbDP = "Indiquez le nombre de demi-pensionnaires, ou cochez « Aucun repas à prévoir ».";
+  else if (x.nbDP > x.nbEleves) e.nbDP = "Le nombre de demi-pensionnaires dépasse le nombre d’élèves.";
   if (!x.accompagnateurs.length) e.acc = "Indiquez au moins un accompagnateur.";
   if (!x.transports.length) e.transports = "Choisissez au moins un mode de transport.";
   vigilance(x).filter(v => v[0] === "bad").forEach(v => { e.participation = v[2]; });
@@ -835,7 +838,7 @@ function syncForm() {
   const type = radioVal(f, "type"), dest = radioVal(f, "destination");
   $$("[data-if]", f).forEach(el => {
     const c = el.dataset.if; if (!c) return;
-    el.classList.toggle("hidden", !((c === "voyage" && type === "voyage") || (c === "etranger" && dest === "etranger")));
+    el.classList.toggle("hidden", !((c === "voyage" && type === "voyage") || (c === "etranger" && dest === "etranger") || (c === "repas" && !$("#sansRepas").checked)));
   });
   const x = readForm(), t = totals(x), dir = x.unite ? dirOf(x) : null;
   state.formDraft = x;
