@@ -206,7 +206,7 @@ function checklistDir(r) {
 function errText(e) {
   const m = String((e && (e.message || e.error_description || e.msg)) || e || "");
   if (/rate limit|security purposes|after \d+ seconds/i.test(m)) return "Trop de demandes en peu de temps : patientez une minute avant de réessayer.";
-  if (/invalid login credentials/i.test(m)) return "Adresse ou mot de passe incorrect.";
+  if (/invalid login credentials/i.test(m)) return "Adresse ou mot de passe incorrect. Saisissez exactement l’identifiant indiqué dans le courriel, et le mot de passe du courriel le plus récent : chaque nouveau mot de passe provisoire annule le précédent.";
   if (/banned/i.test(m)) return "Ce compte est désactivé. Adressez-vous à l’administrateur de l’outil.";
   if (/Failed to fetch|NetworkError|network/i.test(m)) return "Connexion au serveur impossible. Vérifiez votre accès à internet et réessayez.";
   if (/JWT|expired|invalid claim|session/i.test(m)) return "Votre session a expiré : reconnectez-vous.";
@@ -220,7 +220,10 @@ function pwdErr(e) {
   if (/reauthenticat|recent/i.test(m)) return "Par sécurité, déconnectez-vous puis reconnectez-vous avant de changer de mot de passe.";
   return errText(e);
 }
+// Retire les espaces et caractères invisibles ajoutés par un copier-coller depuis un courriel.
+function nettoyerMdp(p) { return String(p || "").replace(/[\u200B-\u200D\u2060\uFEFF]/g, "").replace(/^[\s\u00A0]+|[\s\u00A0]+$/g, ""); }
 function pwdProbleme(p1, p2) {
+  if (p1 !== nettoyerMdp(p1)) return "Le mot de passe ne doit commencer ni finir par une espace.";
   if (p1.length < 8) return "Le mot de passe doit compter au moins 8 caractères.";
   if (!/[A-Za-zÀ-ÿ]/.test(p1) || !/\d/.test(p1)) return "Le mot de passe doit contenir des lettres et des chiffres.";
   if (p1 !== p2) return "Les deux mots de passe ne sont pas identiques.";
@@ -321,7 +324,11 @@ async function onSession(session, opts) {
 }
 async function signIn(email, password) {
   state.busy = true; state.authFlow = true; render();
-  const { data, error } = await db.auth.signInWithPassword({ email, password });
+  let { data, error } = await db.auth.signInWithPassword({ email, password });
+  const propre = nettoyerMdp(password);
+  if (error && /invalid login credentials/i.test(error.message || "") && propre && propre !== password) {
+    ({ data, error } = await db.auth.signInWithPassword({ email, password: propre }));
+  }
   state.busy = false;
   if (error || !data || !data.session) {
     state.authFlow = false;
@@ -455,6 +462,7 @@ function renderTop() {
     '<button class="btn" data-action="tab" data-view="mdp">Changer mon mot de passe</button>' +
     '<button class="btn" data-action="logout">Se déconnecter</button></div></details>';
 }
+const voirMdp = ids => '<label class="inline show-pwd"><input type="checkbox" data-voir-mdp="' + ids + '"> <span>Afficher le mot de passe</span></label>';
 function renderLogin() {
   const L = state.login, dis = state.busy ? " disabled" : "";
   const err = '<span class="err" id="login-err">' + esc(L.error) + "</span>";
@@ -467,12 +475,12 @@ function renderLogin() {
     form = '<form id="reset-code-form" class="stack" novalidate>' + (L.info ? '<div class="callout">' + esc(L.info) + " Il peut mettre une minute à arriver ; pensez à regarder dans les courriels indésirables.</div>" : "") +
       '<div class="field"><label for="reset-code">Code reçu par courriel</label><input id="reset-code" class="code-input" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="••••••"></div>' +
       '<div class="field"><label for="reset-mdp1">Nouveau mot de passe</label><input id="reset-mdp1" type="password" autocomplete="new-password"><span class="hint">8 caractères au moins, avec des lettres et des chiffres.</span></div>' +
-      '<div class="field"><label for="reset-mdp2">Confirmez le mot de passe</label><input id="reset-mdp2" type="password" autocomplete="new-password"></div>' + err +
+      '<div class="field"><label for="reset-mdp2">Confirmez le mot de passe</label><input id="reset-mdp2" type="password" autocomplete="new-password"></div>' + voirMdp("reset-mdp1,reset-mdp2") + err +
       '<button class="btn primary" type="submit"' + dis + ">" + (state.busy ? "Enregistrement…" : "Enregistrer et me connecter") + "</button>" +
       '<div class="row"><button class="link" type="button" data-action="resend">Recevoir un nouveau code</button><button class="link" type="button" data-action="login-back">Retour à la connexion</button></div></form>';
   } else {
     form = '<form id="login-form" class="stack" novalidate>' + emailField("login-email", "username") +
-      '<div class="field"><label for="login-password">Mot de passe</label><input id="login-password" type="password" autocomplete="current-password"' + (L.error ? ' class="invalid" aria-describedby="login-err"' : "") + ">" + err + "</div>" +
+      '<div class="field"><label for="login-password">Mot de passe</label><input id="login-password" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false"' + (L.error ? ' class="invalid" aria-describedby="login-err"' : "") + ">" + err + voirMdp("login-password") + "</div>" +
       '<button class="btn primary" type="submit"' + dis + ">" + (state.busy ? "Connexion…" : "Se connecter") + '</button><button class="link" type="button" data-action="forgot">Mot de passe oublié ?</button></form>';
   }
   return '<div class="login"><div class="card login-card"><div class="login-logo"><img src="img/logo.png" alt="Protectorat Saint-Joseph"></div><h1>Sorties et voyages scolaires</h1><p>Préparez, déposez et suivez vos demandes de sorties et de voyages.</p>' + form + "</div>" +
@@ -485,7 +493,7 @@ function renderMdp() {
     (forced ? "Vous vous êtes connecté avec un mot de passe provisoire. Choisissez le vôtre pour continuer : il remplacera celui reçu par courriel." : "Le nouveau mot de passe remplacera l’actuel sur tous vos appareils.") + "</p></div></div>" +
     '<form id="mdp-form" class="card stack" novalidate style="max-width:520px">' +
     '<div class="field"><label for="mdp-1">Nouveau mot de passe</label><input id="mdp-1" type="password" autocomplete="new-password"><span class="hint">8 caractères au moins, avec des lettres et des chiffres.</span></div>' +
-    '<div class="field"><label for="mdp-2">Confirmez le mot de passe</label><input id="mdp-2" type="password" autocomplete="new-password"><span class="err" id="mdp-err"></span></div>' +
+    '<div class="field"><label for="mdp-2">Confirmez le mot de passe</label><input id="mdp-2" type="password" autocomplete="new-password"><span class="err" id="mdp-err"></span></div>' + voirMdp("mdp-1,mdp-2") +
     '<button class="btn primary" type="submit">Enregistrer mon mot de passe</button>' + (forced ? '<button class="link" type="button" data-action="logout">Se déconnecter</button>' : "") + "</form>";
 }
 function renderTabs() {
@@ -1044,6 +1052,7 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("change", e => {
   const t = e.target;
+  if (t.dataset && t.dataset.voirMdp) { t.dataset.voirMdp.split(",").forEach(id => { const i = $("#" + id); if (i) i.type = t.checked ? "text" : "password"; }); return; }
   if (t.id === "devis-input") {
     const er = $("#err-devis"); if (er) er.textContent = "";
     const trop = [...t.files].filter(f => f.size > TAILLE_MAX);
