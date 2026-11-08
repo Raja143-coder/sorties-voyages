@@ -706,8 +706,13 @@ function renderChefPanel(r, dir) {
   return '<section class="card stack" id="chef-panel" style="border:2px solid var(--accent)"><div><h2>Consultation et arbitrage</h2><p class="hint">La décision revient à ' + esc(dir.nom) + ". Vous pouvez lui transmettre un avis, ou trancher vous-même : votre arbitrage remplace sa décision et chacun en est informé.</p></div>" +
     '<div class="field"><label for="avis-comment">Avis transmis à ' + esc(dir.nom) + '</label><textarea id="avis-comment"></textarea><span class="err" id="avis-err"></span></div>' +
     '<div class="actions"><button class="btn" data-action="avis" data-id="' + r.id + '"' + dis + '>Envoyer mon avis</button></div><hr style="margin:4px 0">' +
-    '<div class="field"><label for="arb-decision">Arbitrage</label><select id="arb-decision"><option value="validee">Valider la demande</option><option value="refusee">Refuser la demande</option></select></div>' +
-    '<div class="field"><label for="arb-comment">Motif de l’arbitrage</label><textarea id="arb-comment"></textarea><span class="err" id="arb-err"></span></div>' +
+    '<div class="field"><label for="arb-decision">Arbitrage</label><select id="arb-decision">' +
+    [["validee", "Valider la demande"], ["complements", "Renvoyer à " + r.author.name + " pour compléments"], ["refusee", "Refuser la demande"]]
+      .filter(([v]) => v !== r.status).map(([v, l]) => '<option value="' + v + '">' + esc(l) + "</option>").join("") + "</select>" +
+    '<span class="hint">' + (r.status === "validee" ? "Un renvoi pour compléments suspend la validation : les services en sont prévenus."
+      : r.status === "complements" ? "Des compléments sont déjà demandés : la demande est chez " + esc(r.author.name) + "."
+      : "Après un renvoi pour compléments, la demande complétée repasse par la décision de " + esc(dir.nom) + ".") + "</span></div>" +
+    '<div class="field"><label for="arb-comment">Motif de l’arbitrage</label><textarea id="arb-comment" placeholder="Transmis à l’organisateur et au directeur de l’unité. Pour un renvoi, précisez les compléments attendus."></textarea><span class="err" id="arb-err"></span></div>' +
     '<div class="actions"><button class="btn primary" data-action="arbitrate" data-id="' + r.id + '"' + dis + ">Arbitrer</button></div></section>";
 }
 function autorisationText(r) {
@@ -953,9 +958,10 @@ function decide(id, decision) {
 }
 function arbitrate(id) {
   const decision = $("#arb-decision").value, comment = $("#arb-comment").value.trim();
-  if (!comment) { $("#arb-err").textContent = "Indiquez le motif de votre arbitrage : il est transmis à l’organisateur et au directeur de l’unité."; $("#arb-comment").classList.add("invalid"); $("#arb-comment").focus(); return; }
-  if (state.current && state.current.status === decision) { $("#arb-err").textContent = "La demande est déjà " + (decision === "validee" ? "validée." : "refusée."); return; }
-  act({ action: "arbitrer", id, decision, commentaire: comment }, "Arbitrage enregistré.", "#arb-err");
+  if (!comment) { $("#arb-err").textContent = (decision === "complements" ? "Précisez les compléments attendus" : "Indiquez le motif de votre arbitrage") + " : il est transmis à l’organisateur et au directeur de l’unité."; $("#arb-comment").classList.add("invalid"); $("#arb-comment").focus(); return; }
+  const r = state.current;
+  act({ action: "arbitrer", id, decision, commentaire: comment },
+    decision === "complements" ? "Demande renvoyée à " + (r ? r.author.name : "l’organisateur") + " pour compléments." : "Arbitrage enregistré.", "#arb-err");
 }
 function avis(id) {
   const comment = $("#avis-comment").value.trim();
