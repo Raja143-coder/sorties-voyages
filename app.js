@@ -443,9 +443,16 @@ function renderComptes() {
     '<div class="field"><label for="comptes-emails">Adresses</label><textarea id="comptes-emails" rows="6" placeholder="prenom.nom@' + esc(DOMAIN) + '"></textarea><span class="err" id="comptes-err"></span></div>' +
     '<div class="actions"><button class="btn primary" data-action="creer-comptes"' + dis + ">" + (state.busy ? "Création en cours…" : "Créer les comptes et envoyer les mots de passe") + "</button></div></section>";
   if (state.comptesRes && state.comptesRes.length) {
-    h += '<section class="card"><h2>Résultat</h2><div class="tbl-wrap"><table class="t"><thead><tr><th>Adresse</th><th>Résultat</th><th>Détail</th></tr></thead><tbody>' +
-      state.comptesRes.map(r => { const st = STATUT_COMPTE[r.statut] || [r.statut, "draft-c"]; return "<tr><td>" + esc(r.email) + '</td><td><span class="pill ' + st[1] + '">' + esc(st[0]) + "</span></td><td>" + esc(r.detail || "") + (r.mdp ? ' : <code class="num">' + esc(r.mdp) + "</code>" : "") + "</td></tr>"; }).join("") +
-      "</tbody></table></div></section>";
+    const avecMdp = state.comptesRes.some(r => r.mdp);
+    h += '<section class="card" id="comptes-res"><h2>Résultat</h2>' +
+      (avecMdp ? '<p class="hint" style="margin:4px 0 12px">Le mot de passe provisoire n’est enregistré nulle part : copiez-le ou envoyez-le avant de quitter l’outil. Sinon, « Nouveau mot de passe » en crée un autre (le précédent ne fonctionne alors plus).</p>' : "") +
+      '<div class="stack res-list">' +
+      state.comptesRes.map((r, i) => {
+        const st = STATUT_COMPTE[r.statut] || [r.statut, "draft-c"];
+        return '<div class="res-item"><div class="row between" style="gap:8px;flex-wrap:wrap"><strong style="word-break:break-all">' + esc(r.email) + '</strong><span class="pill ' + st[1] + '">' + esc(st[0]) + "</span></div>" +
+          (r.mdp ? '<div class="mdp-cell"><span class="hint">Mot de passe provisoire</span><code class="mdp">' + esc(r.mdp) + '</code><button class="btn small" data-action="copier-mdp" data-i="' + i + '">Copier</button><button class="btn small ghost" data-action="copier-message" data-i="' + i + '">Copier le message</button></div>' : "") +
+          (r.detail ? '<div class="hint"' + (r.envoye === false ? ' style="color:var(--bad)"' : "") + ">" + esc(r.detail) + "</div>" : "") + "</div>";
+      }).join("") + "</div></section>";
   }
   h += '<section class="card stack"><div class="row between"><h2>Comptes existants (' + list.length + ')</h2><input id="comptes-filtre" type="text" placeholder="Rechercher une adresse" aria-label="Rechercher une adresse" style="max-width:280px"></div>' +
     (list.length ? '<div class="tbl-wrap"><table class="t"><thead><tr><th>Adresse</th><th>État</th><th>Dernière connexion</th><th class="r">Actions</th></tr></thead><tbody>' +
@@ -468,6 +475,7 @@ async function actionComptes(body, okMsg) {
     state.comptesRes = res.resultats || [];
     state.busy = false; state.flashErr = false; state.flash = okMsg(res);
     await go("comptes", null, { keepFlash: true, keepScroll: true });
+    const rc = $("#comptes-res"); if (rc && state.comptesRes.some(r => r.mdp)) rc.scrollIntoView({ block: "start", behavior: "smooth" });
   } catch (e) {
     state.busy = false; state.flash = errText(e); state.flashErr = true; render();
   }
@@ -1089,6 +1097,17 @@ document.addEventListener("click", e => {
       const t = $("#comptes-emails").value.trim();
       if (!t) { $("#comptes-err").textContent = "Collez au moins une adresse."; break; }
       actionComptes({ action: "creer_comptes", emails: t }, res => { const n = (res.resultats || []).filter(r => r.statut === "cree").length; return n ? plural(n, "compte créé", "comptes créés") + "." : "Aucun nouveau compte créé."; });
+      break;
+    }
+    case "copier-mdp":
+    case "copier-message": {
+      const r = (state.comptesRes || [])[+a.dataset.i]; if (!r || !r.mdp) break;
+      const adresse = location.href.replace(/[?#].*$/, "");
+      const texte = a.dataset.action === "copier-mdp" ? r.mdp
+        : "Bonjour,\nVoici votre accès à l’outil Sorties et voyages du Protectorat Saint-Joseph.\nAdresse : " + adresse + "\nIdentifiant : " + r.email + "\nMot de passe provisoire : " + r.mdp + "\nÀ la première connexion, l’outil vous demandera de choisir votre propre mot de passe.";
+      const label = a.textContent;
+      const fini = t => { a.textContent = t; setTimeout(() => { if (a.isConnected) a.textContent = label; }, 2000); };
+      try { navigator.clipboard.writeText(texte).then(() => fini("Copié"), () => fini("Copie impossible")); } catch (err) { fini("Copie impossible"); }
       break;
     }
     case "compte-reinit": actionComptes({ action: "reinitialiser_compte", email: a.dataset.email }, () => "Nouveau mot de passe provisoire créé pour " + a.dataset.email + "."); break;
