@@ -26,8 +26,10 @@ const SERVICES = {
   compta: { label: "Comptabilité", task: "Facturation aux familles et échéancier" },
   viesco: { label: "Vie scolaire", task: "Emploi du temps réorganisé, absences signalées" },
   secretariat: { label: "Secrétariat", task: "Ordres de mission édités" },
-  cuisine: { label: "Chef de cuisine", task: "Paniers repas prévus" }
+  cuisine: { label: "Chef de cuisine", task: "Paniers repas prévus" },
+  technique: { label: "Service technique", task: "Préparation du lieu et du matériel" }
 };
+const BESOINS_TECH = [["projection", "Projection", "vidéoprojecteur, écran"], ["sonorisation", "Sonorisation", "micros, enceintes"], ["amenagement", "Aménagement du lieu", "chaises, tables, espace scénique"]];
 const STATUS = {
   brouillon: { label: "Brouillon", cls: "draft-c" },
   soumise: { label: "En attente de décision", cls: "warn-c" },
@@ -101,7 +103,7 @@ function fromDb(x) {
     titre: x.titre || "", lieu: x.lieu || "", objectifs: x.objectifs || "", disciplines: x.disciplines || "",
     dateDebut: x.date_debut || "", dateFin: x.date_fin || "", heureDepart: x.heure_depart || "", heureRetour: x.heure_retour || "", rdv: x.rdv || "",
     classes: x.classes || "", nbEleves: num(x.nb_eleves), nbDP: num(x.nb_dp), sansRepas: !!x.sans_repas, besoins: !!x.besoins,
-    observations: x.observations || "", intervenant: x.intervenant || "", reglement: x.reglement || "",
+    observations: x.observations || "", intervenant: x.intervenant || "", reglement: x.reglement || "", technique: x.technique || {},
     accompagnateurs: x.accompagnateurs || [], transports: x.transports || [], hebergement: x.hebergement || "",
     depenses: x.depenses || {}, coutAccomp: num(x.cout_accomp), participation: num(x.participation),
     pieces: x.pieces || [], financement: x.financement || null, taches: x.taches || null,
@@ -117,14 +119,14 @@ function toDb(x) {
     classes: x.classes, nb_eleves: Math.max(0, Math.round(num(x.nbEleves))), nb_dp: x.sansRepas ? 0 : Math.max(0, Math.round(num(x.nbDP))), sans_repas: !!x.sansRepas, besoins: x.besoins,
     accompagnateurs: x.accompagnateurs, transports: x.transports, hebergement: x.hebergement,
     depenses: x.depenses, cout_accomp: num(x.coutAccomp), participation: num(x.participation),
-    observations: x.observations || "", intervenant: x.intervenant || "", reglement: x.reglement || ""
+    observations: x.observations || "", intervenant: x.intervenant || "", reglement: x.reglement || "", technique: x.technique || {}
   };
 }
 function mk(o) {
   return Object.assign({
     id: null, author: null, status: "brouillon", unite: "", type: "sortie", destination: "france", pays: "",
     titre: "", lieu: "", objectifs: "", disciplines: "", dateDebut: "", dateFin: "", heureDepart: "", heureRetour: "", rdv: "",
-    classes: "", nbEleves: 0, nbDP: 0, sansRepas: false, besoins: false, observations: "", intervenant: "", reglement: "", accompagnateurs: [], transports: [], hebergement: "", depenses: {}, coutAccomp: 0, participation: 0,
+    classes: "", nbEleves: 0, nbDP: 0, sansRepas: false, besoins: false, observations: "", intervenant: "", reglement: "", technique: {}, accompagnateurs: [], transports: [], hebergement: "", depenses: {}, coutAccomp: 0, participation: 0,
     pieces: [], financement: null, taches: null, checklist: {}, checkDir: {}, historique: [], liens: {}
   }, o);
 }
@@ -143,8 +145,12 @@ function totals(r) {
   const n = num(r.nbEleves);
   return { eleves, accomp, total, parEleve: n > 0 ? total / n : 0, n };
 }
+function besoinsTexte(r) {
+  const t = r.technique || {}, oui = BESOINS_TECH.filter(([k]) => t[k]).map(([, l]) => l.toLowerCase());
+  return oui.length ? oui.join(", ") : "aucun matériel particulier";
+}
 function servicesNoms(r) {
-  const n = ["la comptabilité", "la vie scolaire"].concat(interne(r) ? [] : ["le secrétariat"], repasAPrevoir(r) ? ["le chef de cuisine"] : []);
+  const n = ["la comptabilité", "la vie scolaire"].concat(interne(r) ? ["le service technique"] : ["le secrétariat"], repasAPrevoir(r) ? ["le chef de cuisine"] : []);
   return n.slice(0, -1).join(", ") + " et " + n[n.length - 1];
 }
 function repasAPrevoir(r) { return !interne(r) && !r.sansRepas && num(r.nbDP) > 0; }
@@ -175,7 +181,7 @@ function checklistInterne(r) {
     ["Préparation", [
       ["salle", "Réserver la salle et convenir de son aménagement (espace scénique, places assises, matériel)"],
       I && ["devis", "Faire signer le devis ou la convention de l’intervenant par la direction"],
-      ["technique", "Vérifier les besoins techniques : sonorisation, vidéoprojecteur, chaises, accès"],
+      ["auto-technique", "Le service technique reçoit vos besoins (lieu, projection, sonorisation, aménagement) à la validation", true],
       ["auto-viesco", "Transmettre à la vie scolaire la date, les horaires, la salle et les classes concernées", true],
       PART && ["echeancier", "Prendre rendez-vous avec Mme Berrami (comptabilité) pour la facturation aux familles"]
     ]],
@@ -619,6 +625,7 @@ function svcDetails(r, svc) {
     const fin = r.financement ? FIN.filter(([k]) => num(r.financement[k]) > 0).map(([k, l]) => l + " : " + eur(num(r.financement[k]))).join(" · ") : "non renseigné";
     return kv([["Élèves", plural(num(r.nbEleves), "élève")], ["Coût par élève", eur(t.parEleve) + (interne(r) ? "" : " (accompagnateurs compris)")], ["Part des familles", part > 0 ? eur(part) + " × " + num(r.nbEleves) + " = " + eur(part * num(r.nbEleves)) : "aucune"], ["Financement par élève", fin]].concat(r.intervenant ? [["Intervenant", r.intervenant]] : [], r.reglement ? [["Règlement du prestataire", r.reglement]] : [], [["Pièces jointes", (r.pieces || []).map(p => p.nom).join(", ") || "aucune"]]));
   }
+  if (svc === "technique") return kv([["Date", dateRange(r) + horaires(r)], ["Lieu", r.lieu], ["Public", (r.classes || "") + " – " + plural(num(r.nbEleves), "élève") + ", " + plural((r.accompagnateurs || []).length, "adulte")], ["Organisateur", r.author.name + " (" + r.author.email + ")"]].concat(r.intervenant ? [["Intervenant", r.intervenant]] : [], [["Besoins", besoinsTexte(r)], ["Précisions", (r.technique || {}).precisions || "aucune"]]));
   if (svc === "viesco" && interne(r)) return kv([["Date", dateRange(r) + horaires(r)], ["Classes", r.classes], ["Lieu", r.lieu], ["Encadrement", staff.map(a => a.nom).join(", ") || "à préciser"]]);
   if (svc === "viesco") return kv([["Date(s)", dateRange(r) + horaires(r)], ["Classes", r.classes], ["Adultes absents", staff.map(a => a.nom).join(", ") || "aucun"], ["Rendez-vous", r.rdv || "non précisé"]].concat(r.type === "voyage" ? [["Voyage", "responsable santé à désigner"]] : []));
   if (svc === "secretariat") return kv([["Date(s)", dateRange(r) + horaires(r)], ["Ordres de mission", staff.map(a => a.nom + " (" + QUALITES[a.qualite].toLowerCase() + ")").join(", ") || "aucun"], ["Destination", r.lieu + (r.pays ? " (" + r.pays + ")" : "")]]);
@@ -739,7 +746,7 @@ function renderDetail(r) {
   if (r.observations && m.role !== "service") h += '<div class="card" style="border-left:4px solid var(--accent)"><h2>Observations de l’organisateur</h2><p class="hint" style="margin-bottom:8px">Destinées à la direction.</p><p style="white-space:pre-line">' + esc(r.observations) + "</p></div>";
   h += '<div class="card"><h2>Le projet</h2>' + kv([["Objectifs", r.objectifs], ["Disciplines", r.disciplines]].concat(r.intervenant ? [["Intervenant", r.intervenant]] : [])) + "</div>";
   h += '<div class="card"><h2>Organisation</h2>' + kv(interne(r)
-    ? [["Date", dateRange(r)], ["Horaires", horairesTexte(r)], ["Lieu dans l’établissement", r.lieu]]
+    ? [["Date", dateRange(r)], ["Horaires", horairesTexte(r)], ["Lieu dans l’établissement", r.lieu], ["Besoins techniques", besoinsTexte(r)], ["Précisions techniques", (r.technique || {}).precisions || ""]]
     : [["Date(s)", dateRange(r)], ["Horaires", horairesTexte(r)], ["Rendez-vous", r.rdv], ["Lieu", r.lieu], ["Transports", (r.transports || []).join(", ")]].concat(r.type === "voyage" ? [["Hébergement", r.hebergement]] : [])) + "</div>";
   const nAcc = (r.accompagnateurs || []).length;
   h += '<div class="card"><h2>Élèves et encadrement</h2>' + kv([["Classes", r.classes], ["Élèves", plural(num(r.nbEleves), "élève")]].concat(interne(r) ? [] : [["Demi-pensionnaires", r.sansRepas ? "aucun repas à prévoir par la restauration" : plural(num(r.nbDP), "élève")]], [["Besoins particuliers", r.besoins ? "oui (PAI, PPS ou AESH)" : "non signalés"], ["Encadrement", nAcc ? encadrement(nAcc, num(r.nbEleves)) : "aucun accompagnateur"]])) +
@@ -838,7 +845,7 @@ function renderForm(r) {
     fld("objectifs", "Objectifs pédagogiques", x.objectifs, { area: true, req: true }) + fld("disciplines", "Disciplines concernées", x.disciplines, { ph: "Ex. : histoire, français" }) +
     fld("intervenant", "Intervenant ou prestataire extérieur", x.intervenant, { if: "etablissement", ph: "Ex. : compagnie Drama Ties", hint: "Laissez vide si l’événement est animé par l’équipe de l’établissement." }) + "</fieldset>";
   h += '<fieldset><legend>3. Dates et horaires</legend><div class="grid2">' + fld("dateDebut", "Date (ou date de départ)", x.dateDebut, { type: "date", req: true }) + fld("dateFin", "Date de retour", x.dateFin, { type: "date", if: "voyage", req: true }) + "</div>" +
-    '<div class="grid3">' + fld("heureDepart", "Heure de départ", x.heureDepart, { type: "time" }) + fld("heureRetour", "Heure de retour", x.heureRetour, { type: "time" }) + fld("rdv", "Lieu de rendez-vous", x.rdv, { ph: "Ex. : gare RER d’Aulnay", if: "dehors" }) + "</div></fieldset>";
+    '<div class="grid3">' + fld("heureDepart", "Heure de départ", x.heureDepart, { type: "time", req: true }) + fld("heureRetour", "Heure de retour", x.heureRetour, { type: "time", req: true }) + fld("rdv", "Lieu de rendez-vous", x.rdv, { ph: "Ex. : gare RER d’Aulnay", if: "dehors" }) + "</div></fieldset>";
   h += '<fieldset><legend>4. Élèves</legend>' + fld("classes", "Classe(s)", x.classes, { req: true, ph: "Ex. : 3e A, 3e B" }) + '<div class="grid2">' + fld("nbEleves", "Nombre d’élèves", x.nbEleves || "", { type: "number", min: 1, req: true, mode: "numeric" }) +
     fld("nbDP", "Dont demi-pensionnaires", x.nbDP || "", { type: "number", min: 0, mode: "numeric", if: "repas", req: true, hint: "Le chef de cuisine sera prévenu pour les paniers repas." }) + "</div>" +
     '<label class="inline" for="sansRepas" data-if="dehors"><input type="checkbox" id="sansRepas" name="sansRepas"' + (x.sansRepas ? " checked" : "") + "> <span>Aucun repas à prévoir par le service de restauration (pique-nique fourni par les familles, repas sur place, retour avant le déjeuner…)</span></label>" +
@@ -850,6 +857,10 @@ function renderForm(r) {
   h += '<fieldset data-if="dehors"><legend>6. Transport et hébergement</legend><div class="field"><span class="label">Modes de transport <span class="req-star" aria-hidden="true">*</span></span><div class="checks">' + TRANSPORTS.map((t, i) => '<label class="check-pill" for="tr-' + i + '"><input type="checkbox" id="tr-' + i + '" name="transports" value="' + esc(t) + '"' + ((x.transports || []).includes(t) ? " checked" : "") + "> " + esc(t) + "</label>").join("") + '</div><span class="err" id="err-transports"></span></div>' +
     '<p class="tip"><span>Le trajet aller-retour ne doit pas durer plus longtemps que l’activité. En car : entreprise inscrite au registre des transporteurs, conducteur professionnel, ceinture obligatoire.</span></p>' +
     fld("hebergement", "Hébergement", x.hebergement, { if: "voyage", ph: "Structure, adresse, type d’accueil", hint: "Au-delà de deux nuitées, privilégier une structure du catalogue national (Éduscol)." }) + "</fieldset>";
+  const tech = x.technique || {};
+  h += '<fieldset data-if="etablissement"><legend>6. Lieu et besoins techniques</legend><p class="hint">Transmis au service technique à la validation, avec la date, les horaires, le lieu et l’effectif.</p>' +
+    '<div class="field"><span class="label">Besoins</span><div class="checks">' + BESOINS_TECH.map(([k, l, d]) => '<label class="inline" for="tech-' + k + '"><input type="checkbox" id="tech-' + k + '"' + (tech[k] ? " checked" : "") + "> <span>" + esc(l) + ' <span class="hint">(' + esc(d) + ")</span></span></label>").join("") + "</div></div>" +
+    fld("techPrecisions", "Précisions pour le service technique", tech.precisions || "", { area: true, ph: "Ex. : 130 chaises en rangs face à la scène, espace scénique de 6 m × 4 m, deux micros sans fil, branchement d’un ordinateur portable, installation à partir de 9 h 30…", hint: "Aménagement souhaité, matériel, horaires d’installation et de rangement, accès pour l’intervenant." }) + "</fieldset>";
   h += '<fieldset><legend>7. Budget</legend><p class="hint">D’après les devis. Le coût des accompagnateurs est intégré au coût par élève.</p><div class="grid3">' +
     DEPENSES.map(([k, l]) => fld("dep-" + k, l + " (€)", money((x.depenses || {})[k]), { type: "number", min: 0, step: "0.01", mode: "decimal", if: "dep-" + k })).join("") +
     fld("coutAccomp", "Part des accompagnateurs (€)", money(x.coutAccomp), { type: "number", min: 0, step: "0.01", mode: "decimal", if: "dehors", hint: "Transport, entrées, hébergement des adultes." }) + "</div>" +
@@ -877,7 +888,9 @@ function readForm() {
     classes: g("classes"), nbEleves: num(g("nbEleves")), nbDP: dedans || $("#sansRepas").checked ? 0 : num(g("nbDP")), sansRepas: dedans || $("#sansRepas").checked, besoins: $("#besoins").checked, accompagnateurs: acc,
     transports: dedans ? [] : $$('input[name="transports"]:checked', f).map(i => i.value), hebergement: type === "voyage" ? g("hebergement") : "",
     depenses: dep, coutAccomp: dedans ? 0 : num(g("coutAccomp")), participation: num(g("participation")), pieces: [...state.formPieces],
-    intervenant: dedans ? g("intervenant") : "", reglement: g("reglement"), observations: g("observations"), status: "brouillon" };
+    intervenant: dedans ? g("intervenant") : "", reglement: g("reglement"), observations: g("observations"),
+    technique: dedans ? Object.assign(Object.fromEntries(BESOINS_TECH.map(([k]) => [k, $("#tech-" + k).checked])), { precisions: g("techPrecisions") }) : {},
+    status: "brouillon" };
 }
 function validateForm(x) {
   const e = {};
@@ -887,6 +900,10 @@ function validateForm(x) {
   if (!x.objectifs) e.objectifs = "Précisez les objectifs pédagogiques : c’est le premier critère de décision.";
   if (!x.dateDebut) e.dateDebut = "Indiquez la date.";
   else if (daysUntil(x.dateDebut) < 0) e.dateDebut = "Cette date est déjà passée.";
+  const dedans = x.type === "etablissement", plusieursJours = x.type === "voyage" && x.dateFin && x.dateFin > x.dateDebut;
+  if (!x.heureDepart) e.heureDepart = dedans ? "Indiquez l’heure de début." : "Indiquez l’heure de départ.";
+  if (!x.heureRetour) e.heureRetour = dedans ? "Indiquez l’heure de fin." : "Indiquez l’heure de retour.";
+  else if (x.heureDepart && !plusieursJours && x.heureRetour <= x.heureDepart) e.heureRetour = dedans ? "L’heure de fin doit suivre l’heure de début." : "L’heure de retour doit suivre l’heure de départ.";
   if (x.type === "voyage") { if (!x.dateFin) e.dateFin = "Indiquez la date de retour."; else if (x.dateDebut && x.dateFin < x.dateDebut) e.dateFin = "La date de retour précède la date de départ."; }
   if (x.type !== "etablissement" && x.destination === "etranger" && !x.pays) e.pays = "Indiquez le pays.";
   if (!x.classes) e.classes = "Indiquez la ou les classes.";
