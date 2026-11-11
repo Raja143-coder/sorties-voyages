@@ -39,6 +39,7 @@ const STATUS = {
 };
 const QUALITES = { enseignant: "Enseignant", personnel: "Personnel de l’établissement", aesh: "AESH", parent: "Parent d’élève", autre: "Autre bénévole" };
 const TRANSPORTS = ["À pied", "Transports en commun", "Car", "Train", "Avion"];
+function autresTransports(x) { return (x.transports || []).filter(t => !TRANSPORTS.includes(t)); }
 const DEPENSES = [["transport", "Transport"], ["activites", "Entrées, visites, activités"], ["hebergement", "Hébergement"], ["prestation", "Prestation de l’intervenant"], ["restauration", "Restauration"], ["autre", "Autre dépense"]];
 // Dépenses proposées selon le type de projet.
 const DEP_TYPES = { transport: ["sortie", "voyage"], activites: ["sortie", "voyage"], hebergement: ["voyage"], prestation: ["etablissement"] };
@@ -844,7 +845,7 @@ function renderForm(r) {
     '<div class="field"><span class="label">Type</span>' + radios("type", "Type", Object.entries(TYPES).map(([k, t]) => [k, t.label, t.hint]), x.type) + "</div>" +
     '<div class="field" data-if="dehors"><span class="label">Destination</span>' + radios("destination", "Destination", [["france", "France"], ["etranger", "Étranger"]], x.destination) + "</div>" +
     fld("pays", "Pays", x.pays, { if: "etranger", req: true, hint: "Chaque mineur devra présenter une autorisation de sortie de territoire et une pièce d’identité." }) + "</fieldset>";
-  h += '<fieldset><legend>2. Le projet</legend>' + fld("titre", "Intitulé", x.titre, { req: true, ph: "Ex. : Cité des sciences, exposition sur le corps humain" }) + fld("lieu", "Lieu(x)", x.lieu, { req: true, hint: '<span data-if="etablissement">Pour un événement dans l’établissement : la salle (gymnase, CDI, salle polyvalente…).</span>' }) +
+  h += '<fieldset><legend>2. Le projet</legend>' + fld("titre", "Intitulé", x.titre, { req: true, ph: "Ex. : Visite de l’exposition sur le corps humain" }) + fld("lieu", "Lieu(x)", x.lieu, { req: true, ph: "Ex. : Cité des sciences et de l’industrie, Paris 19e", hint: '<span data-if="etablissement">Pour un événement dans l’établissement : la salle (gymnase, CDI, salle polyvalente…).</span>' }) +
     fld("objectifs", "Objectifs pédagogiques", x.objectifs, { area: true, req: true }) + fld("disciplines", "Disciplines concernées", x.disciplines, { ph: "Ex. : histoire, français" }) +
     fld("intervenant", "Intervenant ou prestataire extérieur", x.intervenant, { if: "etablissement", ph: "Ex. : compagnie Drama Ties", hint: "Laissez vide si l’événement est animé par l’équipe de l’établissement." }) + "</fieldset>";
   h += '<fieldset><legend>3. Dates et horaires</legend><div class="grid2">' + fld("dateDebut", "Date (ou date de départ)", x.dateDebut, { type: "date", req: true }) + fld("dateFin", "Date de retour", x.dateFin, { type: "date", if: "voyage", req: true }) + "</div>" +
@@ -854,12 +855,13 @@ function renderForm(r) {
     '<label class="inline" for="paniersEvt" data-if="etablissement"><input type="checkbox" id="paniersEvt"' + (interne(x) && !x.sansRepas ? " checked" : "") + "> <span>Des paniers repas sont à prévoir par le chef de cuisine (par exemple pour un pique-nique pris avec des élèves extérieurs)</span></label>" +
     '<label class="inline" for="sansRepas" data-if="dehors"><input type="checkbox" id="sansRepas" name="sansRepas"' + (x.sansRepas ? " checked" : "") + "> <span>Aucun repas à prévoir par le service de restauration (pique-nique fourni par les familles, repas sur place, retour avant le déjeuner…)</span></label>" +
     '<label class="inline" for="besoins"><input type="checkbox" id="besoins" name="besoins"' + (x.besoins ? " checked" : "") + "> <span>Des élèves ont des besoins particuliers (PAI, PPS, accompagnement AESH)</span></label>" +
-    '<p class="tip"><span>Aucune donnée médicale n’est saisie ici : les PAI et les fiches sanitaires restent sur papier, sous pli cacheté.</span></p></fieldset>';
+    '<p class="tip" data-if="dehors"><span>Pensez à vérifier les PAI et renseignez-vous auprès du bureau de la vie scolaire pour les récupérer et les avoir avec vous pendant la sortie.</span></p></fieldset>';
   h += '<fieldset><legend id="leg-acc">5. Accompagnateurs</legend><p class="hint">Indiquez tous les adultes, vous compris. La vie scolaire et le secrétariat s’en servent pour l’emploi du temps et les ordres de mission.</p><div class="stack" id="acc-list" style="gap:10px">' + (x.accompagnateurs.length ? x.accompagnateurs : [null]).map(accRow).join("") +
     '</div><span class="err" id="err-acc"></span><div><button type="button" class="btn small" data-action="add-acc">Ajouter un accompagnateur</button></div><p class="hint" id="ratio"></p>' +
-    '<p class="tip"><span>Les parents et bénévoles doivent être autorisés par écrit par le chef d’établissement. Le conducteur d’un car ne compte pas dans l’encadrement.</span></p></fieldset>';
-  h += '<fieldset data-if="dehors"><legend>6. Transport et hébergement</legend><div class="field"><span class="label">Modes de transport <span class="req-star" aria-hidden="true">*</span></span><div class="checks">' + TRANSPORTS.map((t, i) => '<label class="check-pill" for="tr-' + i + '"><input type="checkbox" id="tr-' + i + '" name="transports" value="' + esc(t) + '"' + ((x.transports || []).includes(t) ? " checked" : "") + "> " + esc(t) + "</label>").join("") + '</div><span class="err" id="err-transports"></span></div>' +
-    '<p class="tip"><span>Le trajet aller-retour ne doit pas durer plus longtemps que l’activité. En car : entreprise inscrite au registre des transporteurs, conducteur professionnel, ceinture obligatoire.</span></p>' +
+    '<p class="tip"><span>Les parents d’élèves peuvent être accompagnateurs : ajoutez-les avec la qualité « Parent d’élève ».</span></p></fieldset>';
+  h += '<fieldset data-if="dehors"><legend>6. Transport et hébergement</legend><div class="field"><span class="label">Modes de transport <span class="req-star" aria-hidden="true">*</span></span><div class="checks">' + TRANSPORTS.map((t, i) => '<label class="check-pill" for="tr-' + i + '"><input type="checkbox" id="tr-' + i + '" name="transports" value="' + esc(t) + '"' + ((x.transports || []).includes(t) ? " checked" : "") + "> " + esc(t) + "</label>").join("") +
+    '<label class="check-pill" for="tr-autre"><input type="checkbox" id="tr-autre"' + (autresTransports(x).length ? " checked" : "") + "> Autre</label>" + '</div><span class="err" id="err-transports"></span></div>' +
+    fld("trAutre", "Autre mode de transport", autresTransports(x).filter(t => t !== "Autre").join(", "), { if: "tr-autre", req: true, ph: "Ex. : vélo, bateau, minibus" }) +
     fld("hebergement", "Hébergement", x.hebergement, { if: "voyage", ph: "Structure, adresse, type d’accueil", hint: "Au-delà de deux nuitées, privilégier une structure du catalogue national (Éduscol)." }) + "</fieldset>";
   const tech = x.technique || {};
   h += '<fieldset data-if="etablissement"><legend>6. Lieu et besoins techniques</legend><p class="hint">Transmis au service technique à la validation, avec la date, les horaires, le lieu et l’effectif.</p>' +
@@ -890,7 +892,7 @@ function readForm() {
     titre: g("titre"), lieu: g("lieu"), objectifs: g("objectifs"), disciplines: g("disciplines"),
     dateDebut: g("dateDebut"), dateFin: type === "voyage" ? g("dateFin") : "", heureDepart: g("heureDepart"), heureRetour: g("heureRetour"), rdv: dedans ? "" : g("rdv"),
     classes: g("classes"), nbEleves: num(g("nbEleves")), nbDP: (dedans ? !$("#paniersEvt").checked : $("#sansRepas").checked) ? 0 : num(g("nbDP")), sansRepas: dedans ? !$("#paniersEvt").checked : $("#sansRepas").checked, besoins: $("#besoins").checked, accompagnateurs: acc,
-    transports: dedans ? [] : $$('input[name="transports"]:checked', f).map(i => i.value), hebergement: type === "voyage" ? g("hebergement") : "",
+    transports: dedans ? [] : $$('input[name="transports"]:checked', f).map(i => i.value).concat($("#tr-autre").checked ? [g("trAutre") || "Autre"] : []), hebergement: type === "voyage" ? g("hebergement") : "",
     depenses: dep, coutAccomp: dedans ? 0 : num(g("coutAccomp")), participation: num(g("participation")), pieces: [...state.formPieces],
     intervenant: dedans ? g("intervenant") : "", reglement: g("reglement"), observations: g("observations"),
     technique: dedans ? Object.assign(Object.fromEntries(BESOINS_TECH.map(([k]) => [k, $("#tech-" + k).checked])), { precisions: g("techPrecisions") }) : {},
@@ -916,6 +918,7 @@ function validateForm(x) {
   else if (x.nbDP > x.nbEleves) e.nbDP = "Le nombre de demi-pensionnaires dépasse le nombre d’élèves.";
   if (!x.accompagnateurs.length) e.acc = x.type === "etablissement" ? "Indiquez au moins un adulte chargé de l’encadrement." : "Indiquez au moins un accompagnateur.";
   if (x.type !== "etablissement" && !x.transports.length) e.transports = "Choisissez au moins un mode de transport.";
+  else if (x.type !== "etablissement" && x.transports.includes("Autre")) e.trAutre = "Précisez l’autre mode de transport.";
   vigilance(x).filter(v => v[0] === "bad").forEach(v => { e.participation = v[2]; });
   return e;
 }
@@ -940,7 +943,7 @@ function syncForm() {
   const f = $("#req-form"); if (!f) return;
   const type = radioVal(f, "type") || "sortie", dedans = type === "etablissement", dest = dedans ? "france" : radioVal(f, "destination");
   const montre = c => c === "voyage" ? type === "voyage" : c === "etranger" ? dest === "etranger" : c === "dehors" ? !dedans : c === "etablissement" ? dedans
-    : c === "repas" ? (dedans ? $("#paniersEvt").checked : !$("#sansRepas").checked) : c.startsWith("dep-") ? depVisible(c.slice(4), type) : true;
+    : c === "repas" ? (dedans ? $("#paniersEvt").checked : !$("#sansRepas").checked) : c === "tr-autre" ? $("#tr-autre").checked : c.startsWith("dep-") ? depVisible(c.slice(4), type) : true;
   $$("[data-if]", f).forEach(el => { const c = el.dataset.if; if (c) el.classList.toggle("hidden", !montre(c)); });
   $("#leg-acc").textContent = dedans ? "5. Encadrement" : "5. Accompagnateurs";
   const lab = (id, t) => { const l = f.querySelector('label[for="' + id + '"]'); if (!l) return; const star = l.querySelector(".req-star"); l.textContent = t; if (star) l.append(" ", star); };
@@ -948,6 +951,8 @@ function syncForm() {
   lab("heureDepart", dedans ? "Heure de début" : "Heure de départ");
   lab("heureRetour", dedans ? "Heure de fin" : "Heure de retour");
   lab("nbDP", dedans ? "Nombre de paniers repas" : "Dont demi-pensionnaires");
+  $("#titre").placeholder = dedans ? "Ex. : Spectacle de théâtre en anglais" : "Ex. : Visite de l’exposition sur le corps humain";
+  $("#lieu").placeholder = dedans ? "Ex. : salle polyvalente" : "Ex. : Cité des sciences et de l’industrie, Paris 19e";
   const x = readForm(), t = totals(x), dir = x.unite ? dirOf(x) : null;
   state.formDraft = x;
   $("#unit-dir").textContent = x.unite ? (dir ? "Décision : " + dir.nom + " (" + (dir.titre || "").toLowerCase() + "). " + chefName() + " est informé et peut arbitrer." : "Aucun directeur n’est enregistré pour cette unité : prévenez l’administrateur de l’outil.") : "L’unité du projet détermine qui décide : " + dirName("college") + " pour le collège, " + dirName("lycee") + " pour le lycée et le pôle supérieur.";
